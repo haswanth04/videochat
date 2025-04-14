@@ -69,22 +69,18 @@ function resizeVideoMedia() {
     let Height = videoMediaContainer.offsetHeight - Margin * 2;
     let max = 0;
     let optional = isHideMeActive && videoMediaContainer.childElementCount <= 2 ? 1 : 0;
-    let isOneVideoElement = videoMediaContainer.childElementCount - optional == 1 ? true : false;
+    let isOneVideoElement = videoMediaContainer.childElementCount - optional == 1;
 
-    // console.log('videoMediaContainer.childElementCount:', {
-    //     isOneVideoElement: isOneVideoElement,
-    //     children: videoMediaContainer.childElementCount,
-    //     optional: optional,
-    // });
+    // Reset any existing transforms
+    resetZoom();
 
-    resetZoom(); //...
-
-    let bigWidth = Width * 4;
+    // Calculate optimal size for single video
+    let bigWidth = Math.min(Width * 0.8, Height * 1.5); // Limit maximum size
     if (isOneVideoElement) {
-        Width = Width - bigWidth;
+        Width = bigWidth;
     }
 
-    // loop (i recommend you optimize this)
+    // Find optimal size for multiple videos
     let i = 1;
     while (i < 5000) {
         let w = Area(i, Cameras.length, Width, Height, Margin);
@@ -95,9 +91,27 @@ function resizeVideoMedia() {
         i++;
     }
 
-    max = max - Margin * 2;
+    max = Math.max(max - Margin * 2, 320); // Ensure minimum size
     setWidth(Cameras, max, bigWidth, Margin, Height, isOneVideoElement);
     setSP('--vmi-wh', max / 3 + 'px');
+
+    // Apply video element optimizations
+    Cameras.forEach(camera => {
+        // Ensure video element has proper attributes
+        const video = camera.querySelector('video');
+        if (video) {
+            video.setAttribute('playsinline', '');
+            video.setAttribute('autoplay', '');
+            video.setAttribute('muted', '');
+            
+            // Add error handling
+            video.onerror = function(e) {
+                console.error('Video element error:', e);
+                // Attempt to recover
+                video.load();
+            };
+        }
+    });
 }
 
 /**
@@ -123,15 +137,25 @@ function resetZoom() {
 function setWidth(Cameras, width, bigWidth, margin, maxHeight, isOneVideoElement) {
     ratio = customRatio ? 0.68 : ratio;
     for (let s = 0; s < Cameras.length; s++) {
-        Cameras[s].style.width = width + 'px';
-        Cameras[s].style.margin = margin + 'px';
-        Cameras[s].style.height = width * ratio + 'px';
+        const camera = Cameras[s];
+        const baseStyle = {
+            width: width + 'px',
+            margin: margin + 'px',
+            height: width * ratio + 'px',
+            transition: 'all 0.3s ease-in-out'
+        };
+
         if (isOneVideoElement) {
-            Cameras[s].style.width = bigWidth + 'px';
-            Cameras[s].style.height = bigWidth * ratio + 'px';
-            let camHeigh = Cameras[s].style.height.substring(0, Cameras[s].style.height.length - 2);
-            if (camHeigh >= maxHeight) Cameras[s].style.height = maxHeight - 2 + 'px';
+            baseStyle.width = bigWidth + 'px';
+            baseStyle.height = bigWidth * ratio + 'px';
+            let camHeight = baseStyle.height.substring(0, baseStyle.height.length - 2);
+            if (camHeight >= maxHeight) {
+                baseStyle.height = (maxHeight - 2) + 'px';
+            }
         }
+
+        // Apply styles
+        Object.assign(camera.style, baseStyle);
     }
 }
 
