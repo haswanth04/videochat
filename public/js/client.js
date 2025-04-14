@@ -1,6 +1,6 @@
 /*
  ██████ ██      ██ ███████ ███    ██ ████████ 
-██      ██      ██ ██      ████   ██    ██    
+██     ██      ██ ██      ████   ██    ██    
 ██      ██      ██ █████   ██ ██  ██    ██    
 ██      ██      ██ ██      ██  ██ ██    ██    
  ██████ ███████ ██ ███████ ██   ████    ██   
@@ -2089,7 +2089,7 @@ async function handleOnIceCandidate(peer_id) {
 
         const { type, candidate, address, sdpMLineIndex } = event.candidate;
 
-        //console.log('[ICE-CANDIDATE] ---->', { type, address, candidate });
+        console.log('[ICE-CANDIDATE]', { type, address, candidate });
 
         sendToServer('relayICE', {
             peer_id,
@@ -2130,13 +2130,33 @@ async function handleOnIceCandidate(peer_id) {
     peerConnections[peer_id].onicecandidateerror = (event) => {
         const { url, errorText } = event;
 
-        console.warn('[ICE candidate] error', { url, error: errorText });
+        console.error('[ICE candidate] error', { url, error: errorText });
 
         if (url.startsWith('host:')) networkHost.innerText = '🔴';
         if (url.startsWith('stun:')) networkStun.innerText = '🔴';
         if (url.startsWith('turn:')) networkTurn.innerText = '🔴';
 
-        //msgPopup('warning', `${url}: ${errorText}`, 'top-end', 6000);
+        // Show error to user
+        msgPopup('warning', `Connection error: ${errorText}`, 'top-end', 6000);
+    };
+
+    // Add connection state change handler
+    peerConnections[peer_id].onconnectionstatechange = (event) => {
+        const state = peerConnections[peer_id].connectionState;
+        console.log(`[Connection state] changed to ${state}`);
+        
+        if (state === 'failed') {
+            console.error('Connection failed - attempting to restart ICE');
+            peerConnections[peer_id].restartIce();
+        } else if (state === 'disconnected') {
+            console.warn('Connection disconnected - attempting to reconnect');
+            // Attempt to reconnect
+            setTimeout(() => {
+                if (peerConnections[peer_id].connectionState === 'disconnected') {
+                    handleRtcOffer(peer_id);
+                }
+            }, 1000);
+        }
     };
 }
 
@@ -2195,22 +2215,31 @@ async function handleOnTrack(peer_id, peers) {
 async function handleAddTracks(peer_id) {
     const peer_name = allPeers[peer_id]['peer_name'];
 
-    const videoTrack = localVideoMediaStream && localVideoMediaStream.getVideoTracks()[0];
-    const audioTrack = localAudioMediaStream && localAudioMediaStream.getAudioTracks()[0];
+    try {
+        const videoTrack = localVideoMediaStream && localVideoMediaStream.getVideoTracks()[0];
+        const audioTrack = localAudioMediaStream && localAudioMediaStream.getAudioTracks()[0];
 
-    console.log('handleAddTracks', {
-        videoTrack: videoTrack,
-        audioTrack: audioTrack,
-    });
+        console.log('Adding tracks to peer', {
+            peer_id,
+            peer_name,
+            hasVideoTrack: !!videoTrack,
+            hasAudioTrack: !!audioTrack
+        });
 
-    if (videoTrack) {
-        console.log('[ADD VIDEO TRACK] to Peer Name [' + peer_name + ']');
-        await peerConnections[peer_id].addTrack(videoTrack, localVideoMediaStream);
-    }
+        if (videoTrack) {
+            console.log('[ADD VIDEO TRACK] to Peer Name [' + peer_name + ']');
+            const sender = await peerConnections[peer_id].addTrack(videoTrack, localVideoMediaStream);
+            console.log('Video track added successfully', sender);
+        }
 
-    if (audioTrack) {
-        console.log('[ADD AUDIO TRACK] to Peer Name [' + peer_name + ']');
-        await peerConnections[peer_id].addTrack(audioTrack, localAudioMediaStream);
+        if (audioTrack) {
+            console.log('[ADD AUDIO TRACK] to Peer Name [' + peer_name + ']');
+            const sender = await peerConnections[peer_id].addTrack(audioTrack, localAudioMediaStream);
+            console.log('Audio track added successfully', sender);
+        }
+    } catch (err) {
+        console.error('Error adding tracks to peer:', err);
+        msgPopup('error', 'Failed to add media tracks: ' + err.message, 'top-end', 6000);
     }
 }
 
@@ -2218,7 +2247,6 @@ async function handleAddTracks(peer_id) {
  * Secure RTC Data Channel
  * https://developer.mozilla.org/en-US/docs/Web/API/RTCDataChannel
  * https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/createDataChannel
- * https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/ondatachannel
  * https://developer.mozilla.org/en-US/docs/Web/API/RTCDataChannel/onmessage
  * @param {string} peer_id socket.id
  */
@@ -2914,41 +2942,122 @@ async function addChild(device, els) {
  * https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia
  */
 async function setupLocalVideoMedia() {
-    if (!useVideo || localVideoMediaStream) {
+    if (localVideoMediaStream) {
+        console.log('[SETUP LOCAL VIDEO] skipped - stream already exists');
         return;
     }
 
-    console.log('Requesting access to video inputs');
-
-    const videoConstraints = useVideo ? await getVideoConstraints('default') : false;
-
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints });
-        await updateLocalVideoMediaStream(stream);
-    } catch (err) {
-        console.error('Error accessing video device', err);
-        console.warn('Fallback to default constraints');
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-            await updateLocalVideoMediaStream(stream);
-        } catch (fallbackErr) {
-            console.error('Error accessing video device with default constraints', fallbackErr);
-            handleMediaError('video', fallbackErr);
+        console.log('[SETUP LOCAL VIDEO] requesting access to video input');
+        const constraints = {
+            video: {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                frameRate: { ideal: 30 }
+            }
+        };
+        console.log('Video constraints:', constraints);
+
+        localVideoMediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log('[SETUP LOCAL VIDEO] stream obtained successfully', localVideoMediaStream.getVideoTracks());
+
+        // Add error handler for video track
+        const videoTrack = localVideoMediaStream.getVideoTracks()[0];
+        if (videoTrack) {
+            videoTrack.onended = async () => {
+                console.warn('Video track ended unexpectedly - attempting to recover');
+                localVideoMediaStream = null;
+                await setupLocalVideoMedia();
+            };
         }
+
+        return localVideoMediaStream;
+    } catch (err) {
+        console.error('[SETUP LOCAL VIDEO] error:', err);
+        msgPopup('error', 'Failed to access camera: ' + err.message, 'top-end', 6000);
+        return null;
+    }
+}
+
+async function setupLocalAudioMedia() {
+    if (localAudioMediaStream) {
+        console.log('[SETUP LOCAL AUDIO] skipped - stream already exists');
+        return;
     }
 
-    /**
-     * Update Local Media Stream
-     * @param {MediaStream} stream
-     */
-    async function updateLocalVideoMediaStream(stream) {
-        if (stream) {
-            localVideoMediaStream = stream;
-            await loadLocalMedia(stream, 'video');
-            console.log('Access granted to video device');
+    try {
+        console.log('[SETUP LOCAL AUDIO] requesting access to audio input');
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        };
+        console.log('Audio constraints:', constraints);
+
+        localAudioMediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log('[SETUP LOCAL AUDIO] stream obtained successfully', localAudioMediaStream.getAudioTracks());
+
+        // Add error handler for audio track
+        const audioTrack = localAudioMediaStream.getAudioTracks()[0];
+        if (audioTrack) {
+            audioTrack.onended = async () => {
+                console.warn('Audio track ended unexpectedly - attempting to recover');
+                localAudioMediaStream = null;
+                await setupLocalAudioMedia();
+            };
+        }
+
+        return localAudioMediaStream;
+    } catch (err) {
+        console.error('[SETUP LOCAL AUDIO] error:', err);
+        msgPopup('error', 'Failed to access microphone: ' + err.message, 'top-end', 6000);
+        return null;
+    }
+}
+
+// Add a function to handle media stream errors
+async function handleMediaStreamError(streamType) {
+    console.error(`[${streamType}] stream error - attempting to recover`);
+    
+    if (streamType === 'video') {
+        localVideoMediaStream = null;
+        await setupLocalVideoMedia();
+    } else if (streamType === 'audio') {
+        localAudioMediaStream = null;
+        await setupLocalAudioMedia();
+    }
+
+    // Notify all peers about the new stream
+    for (const peer_id in peerConnections) {
+        if (peerConnections[peer_id].connectionState === 'connected') {
+            await handleAddTracks(peer_id);
         }
     }
 }
+
+// Add a function to check media stream health
+function checkMediaStreamHealth() {
+    setInterval(() => {
+        if (localVideoMediaStream) {
+            const videoTrack = localVideoMediaStream.getVideoTracks()[0];
+            if (videoTrack && videoTrack.readyState === 'ended') {
+                handleMediaStreamError('video');
+            }
+        }
+        
+        if (localAudioMediaStream) {
+            const audioTrack = localAudioMediaStream.getAudioTracks()[0];
+            if (audioTrack && audioTrack.readyState === 'ended') {
+                handleMediaStreamError('audio');
+            }
+        }
+    }, 5000); // Check every 5 seconds
+}
+
+// Call this after initial media setup
+checkMediaStreamHealth();
 
 /**
  * Setup local audio media. Ask the user for permission to use the computer's microphone,
@@ -2957,24 +3066,28 @@ async function setupLocalVideoMedia() {
  */
 async function setupLocalAudioMedia() {
     if (!useAudio || localAudioMediaStream) {
+        console.log('Audio setup skipped:', { useAudio, hasLocalStream: !!localAudioMediaStream });
         return;
     }
 
     console.log('Requesting access to audio inputs');
 
     const audioConstraints = useAudio ? await getAudioConstraints() : false;
+    console.log('Audio constraints:', audioConstraints);
 
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+        console.log('Audio stream obtained:', stream.getTracks());
         if (stream) {
             await loadLocalMedia(stream, 'audio');
             if (useAudio) {
                 localAudioMediaStream = stream;
                 await getMicrophoneVolumeIndicator(stream);
-                console.log('10. Access granted to audio device');
+                console.log('Audio setup completed successfully');
             }
         }
     } catch (err) {
+        console.error('Error accessing audio device:', err);
         handleMediaError('audio', err);
     }
 }
